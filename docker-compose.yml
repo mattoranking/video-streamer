@@ -1,44 +1,37 @@
 networks:
   frontend: # Exposed network
   backend:  # Internal network
+  videonet:
+    driver: bridge
 
 services:
   nginx:
     image: nginx:latest
     container_name: nginx
     ports:
-      - "8008:443" # Map local port 8080 to NGINX port 80
+      - "8008:443" # Map local port 8008 to NGINX HTTPS port 443
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/dev.crt:/etc/nginx/dev.crt         # Mount SSL certificate
       - ./nginx/dev.key:/etc/nginx/dev.key         # Mount SSL key
+      - ./frontend:/usr/share/nginx/html:ro
     depends_on:
       - user-service
+      - upload-service
+      - streaming-service
+      - metadata-service
     networks:
-      - frontend # Only NGINX is on the frontend network
-      - backend # NGINX also communicates with backend services
+      - frontend # Exposed network
+      - backend  # Internal network
+      - videonet # Also connect to internal video network so NGINX can reach services
 
-  user-service:
-    build:
-      context: ./user-service
-    container_name: user-service
-    depends_on:
-      - db
-      - redis
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres$@db:5432/user_db
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-    networks:
-      - backend # Not exposed to the frontend
-  
-  db:
+  postgres-db:
     image: postgres:latest
     container_name: postgres-db
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: user_db
+      POSTGRES_DB: videodb
     ports:
       - "5430:5432"
     volumes:
@@ -47,15 +40,130 @@ services:
     networks:
       - frontend
       - backend
-  
+      - videonet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     image: redis:latest
     container_name: redis
     ports:
       - "6378:6379" # Expose Redis default ports
     networks:
+      - videonet
       - frontend
       - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  user-service:
+    build:
+      context: .
+      dockerfile: user-service/Dockerfile
+    container_name: user-service
+    depends_on:
+      - postgres-db
+      - redis
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres$@db:5432/user_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    networks:
+      - backend # Not exposed to the frontend
+
+  upload-service:
+    build:
+      context: .
+      dockerfile: upload-service/Dockerfile
+    container_name: upload-service
+    env_file: .env
+    environment:
+      REDIS_HOST: redis
+      METADATA_SERVICE: http://metadata-service:5003
+    volumes:
+      - raw_storage:/storage/raw
+    depends_on:
+      redis:
+        condition: service_healthy
+      metadata-service:
+        condition: service_started
+    networks:
+      - videonet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  transcoding-service:
+    build:
+      context: .
+      dockerfile: transcoding-service/Dockerfile
+    container_name: transcoding-service
+    env_file: .env
+    environment:
+      REDIS_HOST: redis
+      METADATA_SERVICE: http://metadata-service:5003
+    volumes:
+      - raw_storage:/storage/raw
+      - processed_storage:/storage/processed
+    depends_on:
+      redis:
+        condition: service_healthy
+      metadata-service:
+        condition: service_started
+    networks:
+      - videonet
+
+  streaming-service:
+    build:
+      context: .
+      dockerfile: streaming-service/Dockerfile
+    container_name: streaming-service
+    env_file: .env
+    environment:
+      REDIS_HOST: redis
+    volumes:
+      - processed_storage:/storage/processed
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - videonet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  metadata-service:
+    build:
+      context: .
+      dockerfile: metadata-service/Dockerfile
+    container_name: metadata-service
+    environment:
+      DB_HOST: postgres-db
+      DB_NAME: videodb
+      DB_USER: postgres
+      DB_PASS: postgres
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+    networks:
+      - videonet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
+    raw_storage:
+    processed_storage:
     pgdata:

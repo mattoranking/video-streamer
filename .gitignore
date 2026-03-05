@@ -3,3 +3,4 @@ nginx/dev.key
 __pycache__/
 *.py[cod]
 *$py.class
+.env
