@@ -59,9 +59,17 @@ class UploadResponse(BaseModel):
     message: str
 
 
-class VideoCountResponse(BaseModel):
+class ViewCountResponse(BaseModel):
     video_id: str
     views: int
+
+
+class PaginatedVideoResponse(BaseModel):
+    items: list[VideoResponse]
+    total: int
+    page: int
+    per_page: int
+    pages: int
 
 
 class HealthResponse(BaseModel):
