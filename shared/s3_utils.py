@@ -94,7 +94,11 @@ def delete_from_s3(s3_key: str, bucket: str) -> bool:
 def get_cdn_url(s3_key: str) -> str:
     """Return the CDN URL for a processed file or fallback streaming path."""
     if CDN_BASE_URL:
-        return f"{CDN_BASE_URL.rstrip('/')}/{s3_key}"
+        base = CDN_BASE_URL.rstrip('/')
+        # Ensure the URL has a protocol scheme
+        if not base.startswith('http'):
+            base = f"https://{base}"
+        return f"{base}/{s3_key}"
 
     # Fallback: serve via local streaming-service
     return f"/stream-local/{s3_key}"
